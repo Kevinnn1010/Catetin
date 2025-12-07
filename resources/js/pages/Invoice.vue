@@ -1,52 +1,152 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import ApexCharts, { ApexOptions } from 'apexcharts';
+import { onMounted, ref, computed } from 'vue';
 import { dashboard, login, register, finance_dashboard, invoice } from '@/routes';
 import { Head, Link } from '@inertiajs/vue3';
 import { usePage } from '@inertiajs/vue3';
 import axios from 'axios'
 
-const page = usePage();
+// -----------------------------
+// STATE
+// -----------------------------
+const invoices = ref<any[]>([]);
+const loading = ref(false);
+const error = ref<string | null>(null);
 
-// ----- Chart Setup -----
-const brandColor = "#1447E6";
-const brandSecondaryColor = "#5A7DFE";
+const currentPage = ref(1);
+const perPage = ref(10);
+const totalPages = ref(1);
 
-const chartOptions: ApexOptions = {
-  chart: {
-    type: 'area',
-    height: '100%',
-    toolbar: { show: false },
-    zoom: { enabled: false }
-  },
-  series: [
-    { name: "Pemasukan", data: [25435000, 30120000, 29750000, 27225000, 28235500, 0] },
-    { name: "Pengeluaran", data: [17235500, 15575250, 8500750, 22795000, 16287000, 0] }
-  ],
-  xaxis: {
-    categories: ['Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember', 'Januari'],
-    labels: { show: true },
-    axisBorder: { show: false },
-    axisTicks: { show: false },
-  },
-  yaxis: {
-    labels: {
-      formatter: (val: number) => 'Rp ' + val.toLocaleString('id-ID')
-    }
-  },
-  stroke: { width: 3 },
-  colors: [brandColor, brandSecondaryColor],
-  grid: { show: false },
-  dataLabels: { enabled: false },
-  tooltip: { enabled: true }
+const search = ref('');
+const filterStatus = ref('');
+
+// SUMMARY
+const summary = ref({
+  total: 0,
+  paid: 0,
+  pending: 0,
+  overdue: 0,
+});
+
+// -----------------------------
+// HELPERS
+// -----------------------------
+const statusBadge = (status: string) => {
+  const styles: Record<string, string> = {
+    draft: 'bg-gray-200 text-gray-700',
+    sent: 'bg-blue-100 text-blue-700',
+    paid: 'bg-green-100 text-green-700',
+    overdue: 'bg-red-100 text-red-700',
+    cancelled: 'bg-yellow-100 text-yellow-700',
+  };
+  return styles[status] || 'bg-gray-100 text-gray-700';
 };
 
-onMounted(() => {
-  const chartEl = document.getElementById('main-chart');
-  if (chartEl && !chartEl.hasChildNodes()) {
-    new ApexCharts(chartEl, chartOptions).render();
+// -----------------------------
+// CSRF COOKIE
+// -----------------------------
+const getCsrf = async () => {
+  try {
+    await axios.get('http://localhost:8000/sanctum/csrf-cookie', { withCredentials: true });
+  } catch (err) {
+    console.error('Gagal mengambil CSRF cookie', err);
+    throw err;
   }
-});
+};
+
+// -----------------------------
+// FETCH INVOICES
+// -----------------------------
+const fetchInvoices = async () => {
+  loading.value = true;
+  error.value = null;
+
+  try {
+    await getCsrf();
+
+    const res = await axios.get('http://localhost:8000/api/invoices', {
+      params: { page: currentPage.value, per_page: perPage.value },
+      withCredentials: true,
+    });
+
+    invoices.value = res.data.data || [];
+    totalPages.value = res.data.last_page || 1;
+
+    // UPDATE SUMMARY
+    summary.value.total = res.data.total || invoices.value.length;
+    summary.value.paid = invoices.value.filter(i => i.status === 'paid').length;
+    summary.value.pending = invoices.value.filter(i => i.status === 'sent').length;
+    summary.value.overdue = invoices.value.filter(i => i.status === 'overdue').length;
+
+  } catch (err: any) {
+    error.value = err.response?.data?.message || 'Gagal memuat invoice.';
+    console.error(err);
+  } finally {
+    loading.value = false;
+  }
+};
+
+// -----------------------------
+// PAGINATION
+// -----------------------------
+const nextPage = () => {
+  if (currentPage.value < totalPages.value) {
+    currentPage.value++;
+    fetchInvoices();
+  }
+};
+
+const prevPage = () => {
+  if (currentPage.value > 1) {
+    currentPage.value--;
+    fetchInvoices();
+  }
+};
+
+// -----------------------------
+// FILTERED INVOICES
+// -----------------------------
+const filteredInvoices = computed(() =>
+  invoices.value.filter(inv => {
+    const number = inv.number?.toString().toLowerCase() || '';
+    const contactName = inv.contact?.name?.toLowerCase() || '';
+    const searchTerm = search.value.toLowerCase();
+
+    const matchSearch = number.includes(searchTerm) || contactName.includes(searchTerm);
+    const matchStatus = filterStatus.value ? inv.status === filterStatus.value : true;
+
+    return matchSearch && matchStatus;
+  })
+);
+
+// -----------------------------
+// ACTIONS
+// -----------------------------
+const createInvoice = () => alert('Create invoice clicked');
+const viewInvoice = (id: number) => alert('View invoice ' + id);
+
+// -----------------------------
+// DELETE INVOICE
+// -----------------------------
+const deleteInvoice = async (id: number) => {
+  if (!confirm('Yakin ingin menghapus invoice ini?')) return;
+
+  try {
+    await getCsrf();
+    await axios.delete(`http://localhost:8000/api/invoices/${id}`, { withCredentials: true });
+    fetchInvoices();
+  } catch (err: any) {
+    alert(err.response?.data?.message || 'Gagal menghapus invoice');
+    console.error(err);
+  }
+};
+
+// -----------------------------
+// MOUNT
+// -----------------------------
+onMounted(fetchInvoices);
+
+
+const page = usePage();
 
 // ----- Sidebar Dropdown Setup -----
 const isSidebarOpen = ref(false)
@@ -62,15 +162,12 @@ interface DropdownStates {
 const dropdownStates = ref<DropdownStates>({
   finance: false,
   pages: false,
-  // tambahkan key baru di sini jika ada dropdown lain
 });
 
-// Toggle dropdown visibility
 function toggleDropdown(name: string) {
   dropdownStates.value[name] = !dropdownStates.value[name];
 }
 
-// Check if dropdown is open
 function isDropdownOpen(name: string) {
   return !!dropdownStates.value[name];
 }
@@ -879,110 +976,129 @@ function isDropdownOpen(name: string) {
         </div>
       </div>
     </aside>
-    <main class="p-4 md:ml-64 h-auto pt-20 bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
-      <!-- Top Cards -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-        <!-- Total Orders -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow p-6 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-4">
-            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400">Saldo</h2>
-            <span class="bg-green-100 text-green-800 text-xs font-semibold px-2 py-1 rounded-full">+8%</span>
-          </div>
-          <p class="text-2xl lg:text-xl font-bold text-gray-900 dark:text-white">Rp 1.107.549.000,00</p>
-          <p class="text-xs text-gray-400 dark:text-gray-300 mt-2">Saldo terkini di rekening utama</p>
+    <main class=" p-4 md:ml-64 h-auto pt-20">
+
+      <!-- SUMMARY CARDS -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="p-4 bg-white dark:bg-gray-800 rounded-lg shadow">
+          <p class="text-sm text-gray-500">Total Invoice</p>
+          <h2 class="text-2xl font-bold mt-2">{{ summary.total }}</h2>
         </div>
 
-        <!-- Total Revenue -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow p-6 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-4">
-            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400">Pemasukan</h2>
-            <span class="bg-green-100 text-green-800 text-xs font-semibold px-2 py-1 rounded-full">+5%</span>
-          </div>
-          <p class="text-2xl lg:text-xl font-bold text-gray-900 dark:text-white">Rp 28.235.500,00</p>
-          <p class="text-xs text-gray-400 dark:text-gray-300 mt-2">Total pemasukan bulan ini</p>
+        <div class="p-4 bg-white dark:bg-gray-800 rounded-lg shadow">
+          <p class="text-sm text-gray-500">Paid</p>
+          <h2 class="text-2xl font-bold mt-2 text-green-600">{{ summary.paid }}</h2>
         </div>
 
-        <!-- Popular Menu -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow p-6 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-4">
-            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400">Pengeluaran</h2>
-            <span class="bg-red-100 text-red-800 text-xs font-semibold px-2 py-1 rounded-full">-2%</span>
-          </div>
-          <p class="text-2xl lg:text-xl font-bold text-gray-900 dark:text-white">Rp 16.287.000,00</p>
-          <p class="text-xs text-gray-400 dark:text-gray-300 mt-2">Total pengeluaran bulan ini</p>
+        <div class="p-4 bg-white dark:bg-gray-800 rounded-lg shadow">
+          <p class="text-sm text-gray-500">Pending</p>
+          <h2 class="text-2xl font-bold mt-2 text-yellow-300">{{ summary.pending }}</h2>
         </div>
 
-        <!-- Active Customers -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow p-6 flex flex-col justify-between">
-          <div class="flex items-center justify-between mb-4">
-            <h2 class="text-sm font-medium text-gray-500 dark:text-gray-400">Tabungan / Investasi</h2>
-            <span class="bg-red-100 text-red-800 text-xs font-semibold px-2 py-1 rounded-full">+4%</span>
-          </div>
-          <p class="text-2xl lg:text-xl font-bold text-gray-900 dark:text-white">Rp 795.000.200,00</p>
-          <p class="text-xs text-gray-400 dark:text-gray-300 mt-2">Total dana tabungan atau investasi</p>
+        <div class="p-4 bg-white dark:bg-gray-800 rounded-lg shadow">
+          <p class="text-sm text-gray-500">Overdue</p>
+          <h2 class="text-2xl font-bold mt-2 text-red-600">{{ summary.overdue }}</h2>
         </div>
       </div>
 
-      <!-- Chart & Orders -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <!-- Sales Chart -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow p-6">
-          <div class="flex justify-between items-center mb-4">
-            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Statistik Keuangan</h2>
-            <!-- Persentase perubahan -->
-            <span class="text-sm font-medium text-green-500 flex items-center">
-              +12%
-              <svg class="w-4 h-4 ml-1" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M5 12l4-4 4 4H5z" /> <!-- panah ke atas -->
-              </svg>
-            </span>
-          </div>
-          <div class="h-64">
-            <div id="main-chart" class="w-full h-full"></div>
-          </div>
-        </div>
+      <!-- FILTER + ACTIONS -->
+      <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow mb-6">
+        <div class="flex flex-col md:flex-row md:items-center gap-4">
 
+          <!-- Search -->
+          <input v-model="search" type="text" placeholder="Search invoice number / contact..."
+            class="w-full md:w-1/3 p-2 border rounded-lg" />
 
+          <!-- Filter -->
+          <select v-model="filterStatus" class="p-2 border rounded-lg w-full md:w-40">
+            <option value="">All Status</option>
+            <option value="draft">Draft</option>
+            <option value="sent">Sent</option>
+            <option value="paid">Paid</option>
+            <option value="overdue">Overdue</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
 
-        <!-- Recent Orders -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow p-6">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Transaksi Terbaru</h2>
-          <ul class="divide-y divide-gray-200 dark:divide-gray-700">
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Belanja</span>
-              <span class="font-medium">Rp 5.300.000,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Tagihan Listrik</span>
-              <span class="font-medium">Rp 1.250.000,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Tagihan AETRA</span>
-              <span class="font-medium">Rp 750.000,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Lain-lain</span>
-              <span class="font-medium">Rp 6.725.500,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Kebersihan</span>
-              <span class="font-medium">Rp 1.325.500,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Pajak</span>
-              <span class="font-medium">Rp 11.279.000,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Kuliah</span>
-              <span class="font-medium">Rp 3.682.500,00</span>
-            </li>
-            <li class="py-2 flex justify-between text-sm text-gray-700 dark:text-gray-300">
-              <span>Gaji</span>
-              <span class="font-medium">Rp 28.235.500,00</span>
-            </li>
-          </ul>
+          <!-- Create -->
+          <button @click="createInvoice"
+            class="p-2 px-4 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 ml-auto">
+            + New Invoice
+          </button>
+
         </div>
       </div>
+
+      <!-- TABLE -->
+      <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow mb-6">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="border-b">
+              <th class="p-3">Number</th>
+              <th class="p-3">Contact</th>
+              <th class="p-3">Status</th>
+              <th class="p-3">Total</th>
+              <th class="p-3 text-right">Actions</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            <tr v-for="inv in filteredInvoices" :key="inv.id" class="border-b hover:bg-gray-50 dark:hover:bg-gray-700">
+              <td class="p-3">{{ inv.number }}</td>
+
+              <td class="p-3">
+                {{ inv.contact?.name || '-' }}
+              </td>
+
+              <td class="p-3">
+                <span class="px-3 py-1 rounded-full text-sm" :class="statusBadge(inv.status)">
+                  {{ inv.status }}
+                </span>
+              </td>
+
+              <td class="p-3">
+                {{ inv.total ? 'Rp ' + inv.total.toLocaleString() : '-' }}
+              </td>
+
+              <td class="p-3 text-right space-x-2">
+                <button @click="viewInvoice(inv.id)" class="text-blue-600 hover:underline">
+                  View
+                </button>
+
+                <button @click="deleteInvoice(inv.id)" class="text-red-600 hover:underline">
+                  Delete
+                </button>
+              </td>
+            </tr>
+
+            <!-- EMPTY STATE -->
+            <tr v-if="filteredInvoices.length === 0">
+              <td colspan="5" class="p-4 text-center text-gray-500">
+                Tidak ada invoice ditemukan.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- PAGINATION -->
+      <div class="flex items-center justify-between mt-6">
+
+        <button @click="prevPage" :disabled="currentPage <= 1"
+          class="px-4 py-2 bg-gray-200 rounded disabled:opacity-50">
+          Prev
+        </button>
+
+        <span class="font-medium">
+          Page {{ currentPage }} / {{ totalPages }}
+        </span>
+
+        <button @click="nextPage" :disabled="currentPage >= totalPages"
+          class="px-4 py-2 bg-gray-200 rounded disabled:opacity-50">
+          Next
+        </button>
+
+      </div>
+
     </main>
   </div>
 </template>
